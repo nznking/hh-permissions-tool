@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "hh-permissions-tool"
+version = "0.1.0"
+description = "Permissions Tool"
+authors = ["Nick"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+python-dotenv = "^1.0.1"
+click = "^8.1.7"
+rich = "^13.9.4"
+loguru = "^0.7.2"
+google-cloud-asset = "^3.27.1"
+google-cloud-resource-manager = "^1.13.1"
+rich-click = "^1.8.5"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
