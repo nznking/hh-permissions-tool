@@ -16,6 +16,10 @@ from rich.traceback import install
 from rich.prompt import Confirm
 from google.cloud import asset_v1, resourcemanager_v3
 from google.cloud.asset_v1 import Asset
+from google.api_core import exceptions
+from google.iam.v1 import iam_policy_pb2
+from google.oauth2 import service_account
+from google.auth import credentials
 
 # Install rich traceback handler
 install(show_locals=True)
@@ -68,50 +72,67 @@ def load_environment(env_file: Optional[str] = None) -> None:
 
 async def get_project_permissions(project_id: str) -> List[dict]:
     """Get IAM permissions for a Google Cloud project."""
-    client = asset_v1.AssetServiceClient()
-    
-    # Format the project name
-    parent = f"projects/{project_id}"
-    
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-    ) as progress:
-        task = progress.add_task("[cyan]Analyzing project permissions...", total=None)
+    try:
+        # Load credentials from the service account file
+        creds_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+        credentials = service_account.Credentials.from_service_account_file(
+            creds_path,
+            scopes=['https://www.googleapis.com/auth/cloud-platform']
+        )
         
-        try:
-            # Get all IAM policies in the project
-            request = asset_v1.AnalyzeIamPolicyRequest(
-                analysis_query=asset_v1.IamPolicyAnalysisQuery(
-                    scope=parent,
-                    resource_selector=asset_v1.IamPolicyAnalysisQuery.ResourceSelector(
-                        full_resource_name=parent
-                    ),
+        # Create IAM client with explicit credentials
+        client = resourcemanager_v3.ProjectsClient(credentials=credentials)
+        
+        # Format the project name
+        project_name = f"projects/{project_id}"
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("[cyan]Analyzing project permissions...", total=None)
+            
+            try:
+                # Get project IAM policy
+                request = iam_policy_pb2.GetIamPolicyRequest(
+                    resource=project_name
                 )
-            )
-            
-            response = await asyncio.to_thread(
-                client.analyze_iam_policy,
-                request=request
-            )
-            
-            # Process and format the results
-            results = []
-            for result in response.main_analysis.analysis_results:
-                for binding in result.iam_binding:
+                
+                policy = await asyncio.to_thread(
+                    client.get_iam_policy,
+                    request=request
+                )
+                
+                # Process and format the results
+                results = []
+                for binding in policy.bindings:
                     results.append({
                         "role": binding.role,
                         "members": list(binding.members),
-                        "resource": result.attached_resource_full_name
+                        "resource": project_name
                     })
-            
-            progress.update(task, completed=True)
-            return results
-            
-        except Exception as e:
-            logger.error(f"Error analyzing permissions: {str(e)}")
-            return []
+                
+                progress.update(task, completed=True)
+                return results
+                
+            except exceptions.PermissionDenied as e:
+                logger.error(f"Permission denied: {str(e)}")
+                console.print("[red]Error:[/red] Insufficient permissions. Please ensure your service account has the 'roles/viewer' role.")
+                return []
+            except exceptions.NotFound as e:
+                logger.error(f"Project not found: {str(e)}")
+                console.print(f"[red]Error:[/red] Project {project_id} not found.")
+                return []
+            except Exception as e:
+                logger.error(f"Error analyzing permissions: {str(e)}")
+                console.print("[red]Error:[/red] Failed to analyze permissions. Check if required APIs are enabled.")
+                return []
+                
+    except Exception as e:
+        logger.error(f"Failed to initialize client: {str(e)}")
+        console.print("[red]Error:[/red] Failed to initialize Google Cloud client. Check your service account credentials.")
+        return []
 
 def display_permissions_table(permissions: List[dict]):
     """Display permissions in a formatted table."""
@@ -179,13 +200,17 @@ def audit_gcp(project_id: str):
     if not Confirm.ask(f"[yellow]Do you want to audit permissions for project[/yellow] [bold cyan]{project_id}[/bold cyan]?"):
         return
     
-    # Run the async function
-    permissions = asyncio.run(get_project_permissions(project_id))
-    
-    if permissions:
-        display_permissions_table(permissions)
-    else:
-        console.print("[red]No permissions found or an error occurred.[/red]")
+    try:
+        # Run the async function
+        permissions = asyncio.run(get_project_permissions(project_id))
+        
+        if permissions:
+            display_permissions_table(permissions)
+        else:
+            console.print("[yellow]No permissions found for this project.[/yellow]")
+    except Exception as e:
+        logger.error(f"Failed to run audit: {str(e)}")
+        console.print("[red]Failed to run permissions audit. Please check your credentials and project configuration.[/red]")
 
 @cli.command()
 def version():
